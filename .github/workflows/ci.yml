@@ -2,18 +2,18 @@ name: CI
 on: [push]
 jobs:
   lint:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: src/emscripten
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - run: npm install prettier
       - run: npm run format:check
       - run: npm run shellcheck
 
   test:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: src/emscripten
@@ -21,7 +21,7 @@ jobs:
       matrix:
         wasm_simd: ['yes', 'no']
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -73,12 +73,12 @@ jobs:
           bash tests/stress.sh
 
   test-no-embedded-nnue:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: src/emscripten
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
