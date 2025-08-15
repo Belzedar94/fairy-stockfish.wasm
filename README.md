@@ -10,3 +10,8 @@ See [fairy-stockfish-nnue-wasm-demo](https://github.com/ianfab/fairy-stockfish-n
 For development, see [`src/emscripten/README.md`](src/emscripten/README.md).
 
 Current default branch is `nnue`.
+
+To release a new version:
+* Make sure CI passes (update reference bench if required)
+* Bump version number in `src/emscripten/public/package.json`
+* Create and push a tag with the name corresponding to the version number
