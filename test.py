@@ -2,6 +2,7 @@
 
 import faulthandler
 import unittest
+
 import pyffish as sf
 
 faulthandler.enable()
@@ -120,6 +121,21 @@ commoner = k
 castlingKingPiece = k
 extinctionValue = loss
 extinctionPieceTypes = k
+
+[coregaldrop:coregal]
+pieceDrops = true
+startFen = rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[Qq] w KQkq - 0 1
+
+[cannonatomic:atomic]
+cannon = c
+
+[multipawn:chess]
+soldier = s
+pawnTypes = ps
+
+# Capture-anything: allow self-capture while keeping standard chess rules otherwise
+[capture-anything:chess]
+selfCapture = true
 """
 
 sf.load_variant_config(ini_text)
@@ -236,6 +252,10 @@ variant_positions = {
     "wazirking": {
         "7k/6K1/8/8/8/8/8/8 b - - 0 1": (False, False),  # K vs K
     },
+    "multipawn": {
+        "k7/p7/8/8/8/8/8/K7 w - - 0 1": (True, False),  # K vs KP
+        "k7/s7/8/8/8/8/8/K7 w - - 0 1": (True, False),  # K vs KS
+    },
 }
 
 invalid_variant_positions = {
@@ -284,6 +304,57 @@ invalid_variant_positions = {
 
 
 class TestPyffish(unittest.TestCase):
+
+    @staticmethod
+    def _gating_info(move: str):
+        if "," in move:
+            prefix, suffix = move.split(",", 1)
+            if "@" in prefix:
+                tag, square = prefix.split("@", 1)
+                if len(tag) == 1 and tag.isalpha() and square and square.isalnum():
+                    return suffix, tag.lower(), square
+        if len(move) < 5:
+            return None
+        rank_last = move[-1]
+        if rank_last not in "0123456789":
+            return None
+        if len(move) >= 6 and move[-2] in "0123456789":
+            square = move[-3:]
+            gate_index = -4
+        else:
+            square = move[-2:]
+            gate_index = -3
+        if square[0] not in "abcdefghijklmnopqrstuvwxyz":
+            return None
+        gate_char = move[gate_index]
+        if not gate_char.isalpha():
+            return None
+        return move[:gate_index], gate_char.lower(), square
+
+    @staticmethod
+    def _first_normal_move(moves):
+        for move in moves:
+            if TestPyffish._gating_info(move) is None and "@" not in move:
+                return move
+        raise AssertionError("No normal move available")
+
+    @classmethod
+    def _filter_potion_moves(cls, moves, kind):
+        result = []
+        for move in moves:
+            info = cls._gating_info(move)
+            if info and info[1] == kind:
+                result.append(move)
+        return result
+
+    @classmethod
+    def _has_potion_move(cls, moves, kind):
+        for move in moves:
+            info = cls._gating_info(move)
+            if info and info[1] == kind:
+                return True
+        return False
+
     def test_version(self):
         result = sf.version()
         self.assertEqual(len(result), 3)
@@ -346,6 +417,11 @@ class TestPyffish(unittest.TestCase):
         result = sf.legal_moves("seirawan", fen, [])
         self.assertIn("c8g4h", result)
 
+        # Drop pseudo-royals into check
+        result = sf.legal_moves("coregaldrop", sf.start_fen("coregaldrop"), [])
+        self.assertIn("Q@a3", result)
+        self.assertNotIn("Q@a6", result)
+
         # In Cannon Shogi the FGC and FSC can also move one square diagonally and, besides,
         # move or capture two squares diagonally, by leaping an adjacent piece. 
         fen = "lnsg1gsnl/1rc1kuab1/p1+A1p1p1p/3P5/6i2/6P2/P1P1P3P/1B1U1ICR1/LNSGKGSNL[] w - - 1 3"
@@ -397,7 +473,7 @@ class TestPyffish(unittest.TestCase):
         self.assertEqual(['d4c2', 'd4f3', 'd4b5', 'd4e6'], result)
 
 
-    def test_short_castling(self):
+    def test_castling(self):
         legals = ['f5f4', 'a7a6', 'b7b6', 'c7c6', 'd7d6', 'e7e6', 'i7i6', 'j7j6', 'a7a5', 'b7b5', 'c7c5', 'e7e5', 'i7i5', 'j7j5', 'b8a6', 'b8c6', 'h6g4', 'h6i4', 'h6j5', 'h6f7', 'h6g8', 'h6i8', 'd5a2', 'd5b3', 'd5f3', 'd5c4', 'd5e4', 'd5c6', 'd5e6', 'd5f7', 'd5g8', 'j8g8', 'j8h8', 'j8i8', 'e8f7', 'c8b6', 'c8d6', 'g6g2', 'g6g3', 'g6f4', 'g6g4', 'g6h4', 'g6e5', 'g6g5', 'g6i5', 'g6a6', 'g6b6', 'g6c6', 'g6d6', 'g6e6', 'g6f6', 'g6h8', 'f8f7', 'f8g8', 'f8i8']
         moves = ['b2b4', 'f7f5', 'c2c3', 'g8d5', 'a2a4', 'h8g6', 'f2f3', 'i8h6', 'h2h3']
         result = sf.legal_moves("capablanca", CAPA, moves)
@@ -416,6 +492,20 @@ class TestPyffish(unittest.TestCase):
         # d1e1 is a normal king move, so castling has to be d1f1
         result = sf.legal_moves("diana", "rbnk1r/pppbpp/3p2/5P/PPPPPB/RBNK1R w KQkq - 2 3", [])
         self.assertIn("d1f1", result)
+
+        # Atomic960 castling
+        fen = "7k/8/8/8/8/8/2PP4/1RK4q w Q - 0 1"
+        moves = sf.legal_moves("atomic", fen, [], True)
+        # 'c1b1' is the castling move (king to rook square in 960 encoding) and must be illegal
+        self.assertNotIn("c1b1", moves)
+        # A normal king/commoner move like c1b2 should remain legal
+        self.assertIn("c1b2", moves)
+
+        # Atomic960 anti-discovered check with cannon
+        fen = "8/8/8/8/8/6k1/8/c5KR w K - 0 1"
+        moves = sf.legal_moves("cannonatomic", fen, [], True)
+        self.assertNotIn("g1h1", moves)
+        self.assertIn("g1f1", moves)
 
         # Check that in variants where castling rooks are not in the corner
         # the castling rook is nevertheless assigned correctly
@@ -663,6 +753,105 @@ class TestPyffish(unittest.TestCase):
         moves = ["a1a8"]
         result = sf.get_fen("cambodian", fen, moves, False, False, True)
         self.assertEqual(result, "Rnsmksnr/8/1ppppppp/8/8/1PPPPPPP/8/1NSKMSNR b DEd - 0 1")
+
+    def test_capture_anything_knight_self_capture(self):
+        chess_start = sf.start_fen("chess")
+        chess_moves = sf.legal_moves("chess", chess_start, [])
+        self.assertNotIn("g1e2", chess_moves)
+
+        capture_anything_start = sf.start_fen("capture-anything")
+        capture_moves = sf.legal_moves("capture-anything", capture_anything_start, [])
+        self.assertIn("g1e2", capture_moves)
+
+        san = sf.get_san("capture-anything", capture_anything_start, "g1e2")
+        self.assertIn("x", san)
+
+    def test_capture_anything_pawn_self_capture_resets_clock(self):
+        fen = "6k1/8/8/5N2/4P3/8/8/6K1 w - - 17 1"
+        moves = sf.legal_moves("capture-anything", fen, [])
+        self.assertIn("e4f5", moves)
+        self.assertTrue(sf.is_capture("capture-anything", fen, [], "e4f5"))
+
+        new_fen = sf.get_fen("capture-anything", fen, ["e4f5"])
+        self.assertEqual(int(new_fen.split()[4]), 0)
+
+    def test_spell_chess_freeze_blocks_origin(self):
+        start = sf.start_fen("spell-chess")
+        moves = sf.legal_moves("spell-chess", start, [])
+        freeze_moves = self._filter_potion_moves(moves, "f")
+        self.assertTrue(freeze_moves)
+        for move in freeze_moves:
+            self.assertIn(",", move)
+            self.assertEqual(move[0].lower(), "f")
+            self.assertEqual(move[1], "@")
+
+        freeze_on_e2 = [m for m in freeze_moves if self._gating_info(m)[2] == "e2"]
+        self.assertTrue(freeze_on_e2)
+
+        for move in freeze_on_e2:
+            base, _, _ = self._gating_info(move)
+            self.assertNotEqual(base[:2], "e2")
+
+    def test_spell_chess_jump_allows_leap(self):
+        fen = "4k3/8/8/8/8/8/P7/R3K3[JJFFFFFjjfffff] w - - 0 1"
+        moves = sf.legal_moves("spell-chess", fen, [])
+        jump_moves = self._filter_potion_moves(moves, "j")
+        self.assertTrue(jump_moves)
+        for move in jump_moves:
+            self.assertIn(",", move)
+            self.assertEqual(move[0].lower(), "j")
+            self.assertEqual(move[1], "@")
+
+        leap_moves = [m for m in jump_moves if self._gating_info(m)[0] == "a1a3" and self._gating_info(m)[2] == "a2"]
+        self.assertTrue(leap_moves)
+        self.assertNotIn("a1a3", moves)
+
+    def test_spell_chess_freeze_cooldown(self):
+        start = "4k3/8/8/8/8/8/8/4K1N1[JJFFFFFjjfffff] w - - 0 1"
+        history = []
+
+        moves = sf.legal_moves("spell-chess", start, history)
+        freeze_moves = self._filter_potion_moves(moves, "f")
+        self.assertTrue(freeze_moves)
+        history.append(freeze_moves[0])
+
+        moves = sf.legal_moves("spell-chess", start, history)
+        history.append(self._first_normal_move(moves))
+
+        moves = sf.legal_moves("spell-chess", start, history)
+        self.assertFalse(self._has_potion_move(moves, "f"))
+        history.append(self._first_normal_move(moves))
+
+        moves = sf.legal_moves("spell-chess", start, history)
+        history.append(self._first_normal_move(moves))
+
+        moves = sf.legal_moves("spell-chess", start, history)
+        self.assertFalse(self._has_potion_move(moves, "f"))
+        history.append(self._first_normal_move(moves))
+
+        moves = sf.legal_moves("spell-chess", start, history)
+        history.append(self._first_normal_move(moves))
+
+        moves = sf.legal_moves("spell-chess", start, history)
+        self.assertFalse(self._has_potion_move(moves, "f"))
+        history.append(self._first_normal_move(moves))
+
+        moves = sf.legal_moves("spell-chess", start, history)
+        history.append(self._first_normal_move(moves))
+
+        moves = sf.legal_moves("spell-chess", start, history)
+        self.assertTrue(self._has_potion_move(moves, "f"))
+
+    def test_spell_chess_jump_capture_wins_immediately(self):
+        fen = "5rk1/1p2ppb1/2p1q1p1/3p2Np/3P2n1/3BP3/PPP2PPP/R1B1K2R[JFFFFjffff] b KQ - 5 12"
+        result = sf.game_result("spell-chess", fen, ["j@e3,e6e1"])
+        self.assertEqual(result, -sf.VALUE_MATE)
+
+    def test_spell_chess_freeze_check_does_not_win(self):
+        fen = "rnbqk1nr/pppp1ppp/8/1N2p3/1b6/8/PPPPPPPP/R1BQKBNR[JJFFFFFjjfffff] w KQkq - 2 3"
+        result = sf.game_result("spell-chess", fen, ["f@d7,b5c7"])
+        self.assertNotEqual(result, sf.VALUE_MATE)
+        self.assertNotEqual(result, -sf.VALUE_MATE)
 
     def test_get_san(self):
         fen = "4k3/8/3R4/8/1R3R2/8/3R4/4K3 w - - 0 1"
