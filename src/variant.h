@@ -66,12 +66,16 @@ struct Variant {
   bool blastOnCapture = false;
   PieceSet blastImmuneTypes = NO_PIECE_SET;
   PieceSet mutuallyImmuneTypes = NO_PIECE_SET;
+  // Allow capturing pieces of the same color (friendly capture)
+  bool selfCapture = false;
+  // Iron pieces: attempts to capture these piece types are illegal
+  PieceSet ironPieceTypes = NO_PIECE_SET;
   PieceSet petrifyOnCaptureTypes = NO_PIECE_SET;
   bool petrifyBlastPieces = false;
   bool doubleStep = true;
   Bitboard doubleStepRegion[COLOR_NB] = {Rank2BB, Rank7BB};
   Bitboard tripleStepRegion[COLOR_NB] = {};
-  Bitboard enPassantRegion = AllSquares;
+  Bitboard enPassantRegion[COLOR_NB] = {AllSquares, AllSquares};
   PieceSet enPassantTypes[COLOR_NB] = {piece_set(PAWN), piece_set(PAWN)};
   bool castling = true;
   bool castlingDroppedPiece = false;
@@ -118,6 +122,17 @@ struct Variant {
   Rank soldierPromotionRank = RANK_1;
   EnclosingRule flipEnclosedPieces = NO_ENCLOSING;
   bool freeDrops = false;
+
+  enum PotionType : int {
+      POTION_FREEZE,
+      POTION_JUMP,
+      POTION_TYPE_NB
+  };
+
+  bool potions = false;
+  PieceType potionPiece[POTION_TYPE_NB] = {NO_PIECE_TYPE, NO_PIECE_TYPE};
+  int potionCooldown[POTION_TYPE_NB] = {};
+  bool potionDropOnOccupied = false;
 
   // game end
   PieceSet nMoveRuleTypes[COLOR_NB] = {piece_set(PAWN), piece_set(PAWN)};
