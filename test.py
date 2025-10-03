@@ -2,6 +2,7 @@
 
 import faulthandler
 import unittest
+
 import pyffish as sf
 
 faulthandler.enable()
@@ -120,6 +121,21 @@ commoner = k
 castlingKingPiece = k
 extinctionValue = loss
 extinctionPieceTypes = k
+
+[coregaldrop:coregal]
+pieceDrops = true
+startFen = rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[Qq] w KQkq - 0 1
+
+[cannonatomic:atomic]
+cannon = c
+
+[multipawn:chess]
+soldier = s
+pawnTypes = ps
+
+# Capture-anything: allow self-capture while keeping standard chess rules otherwise
+[capture-anything:chess]
+selfCapture = true
 """
 
 sf.load_variant_config(ini_text)
@@ -236,6 +252,10 @@ variant_positions = {
     "wazirking": {
         "7k/6K1/8/8/8/8/8/8 b - - 0 1": (False, False),  # K vs K
     },
+    "multipawn": {
+        "k7/p7/8/8/8/8/8/K7 w - - 0 1": (True, False),  # K vs KP
+        "k7/s7/8/8/8/8/8/K7 w - - 0 1": (True, False),  # K vs KS
+    },
 }
 
 invalid_variant_positions = {
@@ -295,6 +315,9 @@ class TestPyffish(unittest.TestCase):
     def test_variants_loaded(self):
         variants = sf.variants()
         self.assertTrue("shogun" in variants)
+        for name in ["andernach", "antiandernach", "superandernach", "tibetan", "benedict"]:
+            with self.subTest(variant=name):
+                self.assertIn(name, variants)
 
     def test_set_option(self):
         result = sf.set_option("UCI_Variant", "capablanca")
@@ -345,6 +368,11 @@ class TestPyffish(unittest.TestCase):
         fen = "rnbq3r/pp2bkpp/8/2p1p2K/2p1P3/8/PPPP1PPP/RNB4R[EHeh] b ABCHabcdh - 0 10"
         result = sf.legal_moves("seirawan", fen, [])
         self.assertIn("c8g4h", result)
+
+        # Drop pseudo-royals into check
+        result = sf.legal_moves("coregaldrop", sf.start_fen("coregaldrop"), [])
+        self.assertIn("Q@a3", result)
+        self.assertNotIn("Q@a6", result)
 
         # In Cannon Shogi the FGC and FSC can also move one square diagonally and, besides,
         # move or capture two squares diagonally, by leaping an adjacent piece. 
@@ -397,7 +425,7 @@ class TestPyffish(unittest.TestCase):
         self.assertEqual(['d4c2', 'd4f3', 'd4b5', 'd4e6'], result)
 
 
-    def test_short_castling(self):
+    def test_castling(self):
         legals = ['f5f4', 'a7a6', 'b7b6', 'c7c6', 'd7d6', 'e7e6', 'i7i6', 'j7j6', 'a7a5', 'b7b5', 'c7c5', 'e7e5', 'i7i5', 'j7j5', 'b8a6', 'b8c6', 'h6g4', 'h6i4', 'h6j5', 'h6f7', 'h6g8', 'h6i8', 'd5a2', 'd5b3', 'd5f3', 'd5c4', 'd5e4', 'd5c6', 'd5e6', 'd5f7', 'd5g8', 'j8g8', 'j8h8', 'j8i8', 'e8f7', 'c8b6', 'c8d6', 'g6g2', 'g6g3', 'g6f4', 'g6g4', 'g6h4', 'g6e5', 'g6g5', 'g6i5', 'g6a6', 'g6b6', 'g6c6', 'g6d6', 'g6e6', 'g6f6', 'g6h8', 'f8f7', 'f8g8', 'f8i8']
         moves = ['b2b4', 'f7f5', 'c2c3', 'g8d5', 'a2a4', 'h8g6', 'f2f3', 'i8h6', 'h2h3']
         result = sf.legal_moves("capablanca", CAPA, moves)
@@ -416,6 +444,20 @@ class TestPyffish(unittest.TestCase):
         # d1e1 is a normal king move, so castling has to be d1f1
         result = sf.legal_moves("diana", "rbnk1r/pppbpp/3p2/5P/PPPPPB/RBNK1R w KQkq - 2 3", [])
         self.assertIn("d1f1", result)
+
+        # Atomic960 castling
+        fen = "7k/8/8/8/8/8/2PP4/1RK4q w Q - 0 1"
+        moves = sf.legal_moves("atomic", fen, [], True)
+        # 'c1b1' is the castling move (king to rook square in 960 encoding) and must be illegal
+        self.assertNotIn("c1b1", moves)
+        # A normal king/commoner move like c1b2 should remain legal
+        self.assertIn("c1b2", moves)
+
+        # Atomic960 anti-discovered check with cannon
+        fen = "8/8/8/8/8/6k1/8/c5KR w K - 0 1"
+        moves = sf.legal_moves("cannonatomic", fen, [], True)
+        self.assertNotIn("g1h1", moves)
+        self.assertIn("g1f1", moves)
 
         # Check that in variants where castling rooks are not in the corner
         # the castling rook is nevertheless assigned correctly
@@ -663,6 +705,115 @@ class TestPyffish(unittest.TestCase):
         moves = ["a1a8"]
         result = sf.get_fen("cambodian", fen, moves, False, False, True)
         self.assertEqual(result, "Rnsmksnr/8/1ppppppp/8/8/1PPPPPPP/8/1NSKMSNR b DEd - 0 1")
+
+    def test_capture_anything_knight_self_capture(self):
+        chess_start = sf.start_fen("chess")
+        chess_moves = sf.legal_moves("chess", chess_start, [])
+        self.assertNotIn("g1e2", chess_moves)
+
+        capture_anything_start = sf.start_fen("capture-anything")
+        capture_moves = sf.legal_moves("capture-anything", capture_anything_start, [])
+        self.assertIn("g1e2", capture_moves)
+
+        san = sf.get_san("capture-anything", capture_anything_start, "g1e2")
+        self.assertIn("x", san)
+
+    def test_capture_anything_pawn_self_capture_resets_clock(self):
+        fen = "6k1/8/8/5N2/4P3/8/8/6K1 w - - 17 1"
+        moves = sf.legal_moves("capture-anything", fen, [])
+        self.assertIn("e4f5", moves)
+        self.assertTrue(sf.is_capture("capture-anything", fen, [], "e4f5"))
+
+        new_fen = sf.get_fen("capture-anything", fen, ["e4f5"])
+        self.assertEqual(int(new_fen.split()[4]), 0)
+
+    def test_andernach_capture_changes_color(self):
+        fen = "4k3/8/3n4/4P3/8/8/8/4K3 w - - 0 1"
+        result = sf.get_fen("andernach", fen, ["e5d6"])
+        self.assertEqual(result, "4k3/8/3p4/8/8/8/8/4K3 b - - 0 1")
+
+    def test_andernach_non_capture_keeps_color(self):
+        fen = "4k3/8/8/4P3/8/8/8/4K3 w - - 0 1"
+        result = sf.get_fen("andernach", fen, ["e5e6"])
+        self.assertEqual(result, "4k3/8/4P3/8/8/8/8/4K3 b - - 0 1")
+
+    def test_antiandernach_non_capture_changes_color(self):
+        fen = "4k3/8/8/4P3/8/8/8/4K3 w - - 0 1"
+        result = sf.get_fen("antiandernach", fen, ["e5e6"])
+        self.assertEqual(result, "4k3/8/4p3/8/8/8/8/4K3 b - - 0 1")
+
+    def test_superandernach_changes_color_on_any_move(self):
+        fen_non_capture = "4k3/8/8/4P3/8/8/8/4K3 w - - 0 1"
+        result = sf.get_fen("superandernach", fen_non_capture, ["e5e6"])
+        self.assertEqual(result, "4k3/8/4p3/8/8/8/8/4K3 b - - 0 1")
+
+        fen_capture = "4k3/8/3n4/4P3/8/8/8/4K3 w - - 0 1"
+        result_capture = sf.get_fen("superandernach", fen_capture, ["e5d6"])
+        self.assertEqual(result_capture, "4k3/8/3p4/8/8/8/8/4K3 b - - 0 1")
+
+    def test_tibetan_capture_changes_type_and_color(self):
+        fen = "4k3/8/8/3p4/2Q5/8/8/4K3 b - - 0 1"
+        result = sf.get_fen("tibetan", fen, ["d5c4"])
+        self.assertEqual(result, "4k3/8/8/8/2Q5/8/8/4K3 w - - 0 2")
+
+    def test_benedict_flips_attacked_pieces(self):
+        fen = "4k3/3n4/8/8/8/8/3R4/4K3 w - - 0 1"
+        result = sf.get_fen("benedict", fen, ["d2d4"])
+        self.assertEqual(result, "4k3/3N4/8/8/3R4/8/8/4K3 b - - 1 1")
+
+    def test_benedict_disallows_captures(self):
+        fen = "4k3/3n4/8/8/8/8/3R4/4K3 w - - 0 1"
+        moves = sf.legal_moves("benedict", fen, [])
+        self.assertNotIn("d2d7", moves)
+
+    def test_benedict_traitor_must_move_before_attacking(self):
+        fen = sf.start_fen("benedict")
+        moves = ["g1f3", "e7e5", "f3g5", "e8e7", "g5e6"]
+
+        game_end, _ = sf.is_immediate_game_end("benedict", fen, moves)
+        self.assertFalse(game_end)
+
+        legal = sf.legal_moves("benedict", fen, moves)
+        self.assertIn("d7d6", legal)
+
+    def test_benedict_foolmate(self):
+        fen = "rnbqkbnr/pp1ppppp/2p5/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2"
+        moves = sf.legal_moves("benedict", fen, [])
+        self.assertIn("d8a5", moves)
+
+        result_fen = sf.get_fen("benedict", fen, ["d8a5"])
+        self.assertEqual(result_fen, "rnb1kbnr/pp1ppppp/2p5/q7/3PP3/8/pPP2PPP/RNBQkBNR w kq - 1 3")
+
+        game_end, value = sf.is_immediate_game_end("benedict", result_fen, [])
+        self.assertTrue(game_end)
+        self.assertEqual(value, -sf.VALUE_MATE)
+
+    def test_benedict_sample_sequence_black_wins(self):
+        start = sf.start_fen("benedict")
+        moves = [
+            "e2e3",
+            "e7e6",
+            "d1e2",
+            "h7h5",
+            "e2b5",
+            "f7f5",
+            "b5e5",
+            "b8c6",
+            "g1f3",
+            "f8d6",
+            "b7b8q",
+            "e5c3",
+            "e1d1",
+            "e3e2",
+        ]
+
+        for ply in range(1, len(moves)):
+            game_end, value = sf.is_immediate_game_end("benedict", start, moves[:ply])
+            self.assertFalse(game_end, f"Unexpected game end after moves {moves[:ply]}")
+
+        game_end, value = sf.is_immediate_game_end("benedict", start, moves)
+        self.assertTrue(game_end)
+        self.assertEqual(value, -sf.VALUE_MATE)
 
     def test_get_san(self):
         fen = "4k3/8/3R4/8/1R3R2/8/3R4/4K3 w - - 0 1"
@@ -1030,6 +1181,10 @@ class TestPyffish(unittest.TestCase):
 
     def test_game_result(self):
         result = sf.game_result("chess", CHESS, ["f2f3", "e7e5", "g2g4", "d8h4"])
+        self.assertEqual(result, -sf.VALUE_MATE)
+
+        # Benedict checkmate triggered by color change
+        result = sf.game_result("benedict", CHESS, ["e2e4", "c7c6", "d2d4", "d8a5"])
         self.assertEqual(result, -sf.VALUE_MATE)
 
         # shogi pawn drop mate
