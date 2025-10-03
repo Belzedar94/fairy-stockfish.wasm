@@ -372,31 +372,53 @@ inline bool has_insufficient_material(Color c, const Position& pos) {
         || (pos.flag_region(c) && pos.count(c, pos.flag_piece(c))))
         return false;
 
-    // Restricted pieces
-    Bitboard restricted = pos.pieces(~c, KING);
-    // Atomic kings can not help checkmating
-    if (pos.extinction_pseudo_royal() && pos.blast_on_capture() && (pos.extinction_piece_types() & COMMONER))
-        restricted |= pos.pieces(c, COMMONER);
+    // Precalculate if any promotion pawn types have pieces
+    bool hasPromotingPawn = false;
+    for (PieceSet pawnTypes = pos.promotion_pawn_types(c); pawnTypes; )
+    {
+        PieceType pawnType = pop_lsb(pawnTypes);
+        if (pos.count(c, pawnType) > 0)
+        {
+            hasPromotingPawn = true;
+            break;
+        }
+    }
+
+    // Determine checkmating potential of present pieces
+    constexpr PieceSet MAJOR_PIECES = piece_set(ROOK) | QUEEN | ARCHBISHOP | CHANCELLOR
+                                     | SILVER | GOLD | COMMONER | CENTAUR | AMAZON | BERS;
+    constexpr PieceSet COLORBOUND_PIECES = piece_set(BISHOP) | FERS | FERS_ALFIL | ALFIL | ELEPHANT;
+    Bitboard restricted = pos.pieces(KING);
+    Bitboard colorbound = 0;
     for (PieceSet ps = pos.piece_types(); ps;)
     {
         PieceType pt = pop_lsb(ps);
-        if (pt == KING || !(pos.board_bb(c, pt) & pos.board_bb(~c, KING)))
+
+        // Constrained pieces
+        if (pt == KING || !(pos.board_bb(c, pt) & pos.board_bb(~c, KING)) || (pos.extinction_pseudo_royal() && pos.blast_on_capture() && (pos.extinction_piece_types() & pt)))
             restricted |= pos.pieces(c, pt);
-        else if (is_custom(pt) && pos.count(c, pt) > 0)
-            // to be conservative, assume any custom piece has mating potential
-            return false;
+
+        // If piece is a major piece or a custom piece we consider it sufficient for mate.
+        // To avoid false positives, we assume any custom piece has mating potential.
+        else if ((MAJOR_PIECES & pt) || is_custom(pt))
+        {
+            // Check if piece is already on the board
+            if (pos.count(c, pt) > 0)
+                return false;
+
+            // Check if any pawn can promote to this piece type
+            if (hasPromotingPawn && (pos.promotion_piece_types(c) & pt))
+                return false;
+        }
+
+        // Collect color-bound pieces
+        else if (COLORBOUND_PIECES & pt)
+            colorbound |= pos.pieces(pt);
     }
 
-    // Mating pieces
-    for (PieceType pt : { ROOK, QUEEN, ARCHBISHOP, CHANCELLOR, SILVER, GOLD, COMMONER, CENTAUR, AMAZON, BERS })
-        if ((pos.pieces(c, pt) & ~restricted) || (pos.count(c, pos.main_promotion_pawn_type(c)) && (pos.promotion_piece_types(c) & pt)))
-            return false;
+    Bitboard unbound = pos.pieces() ^ restricted ^ colorbound;
 
     // Color-bound pieces
-    Bitboard colorbound = 0, unbound;
-    for (PieceType pt : { BISHOP, FERS, FERS_ALFIL, ALFIL, ELEPHANT })
-        colorbound |= pos.pieces(pt) & ~restricted;
-    unbound = pos.pieces() ^ restricted ^ colorbound;
     if ((colorbound & pos.pieces(c)) && (((DarkSquares & colorbound) && (~DarkSquares & colorbound)) || unbound || pos.stalemate_value() != VALUE_DRAW || pos.check_counting() || pos.makpong()))
         return false;
 
@@ -858,30 +880,31 @@ inline int piece_count(const std::string& fenBoard, Color c, PieceType pt, const
 }
 
 inline Validation check_number_of_kings(const std::string& fenBoard, const std::string& startFenBoard, const Variant* v) {
-    int nbWhiteKings = piece_count(fenBoard, WHITE, KING, v);
-    int nbBlackKings = piece_count(fenBoard, BLACK, KING, v);
-    int nbWhiteKingsStart = piece_count(startFenBoard, WHITE, KING, v);
-    int nbBlackKingsStart = piece_count(startFenBoard, BLACK, KING, v);
+    for (Color c : {WHITE, BLACK})
+    {
+        PieceType royal = v->castlingKingIsRoyal ? v->castlingKingPiece[c] : KING;
+        if (royal == NO_PIECE_TYPE || !(v->pieceTypes & piece_set(royal)))
+        {
+            if (!(v->pieceTypes & KING))
+                continue;
+            royal = KING;
+        }
 
-    if (nbWhiteKings > 1)
-    {
-        std::cerr << "Invalid number of white kings. Maximum: 1. Given: " << nbWhiteKings << std::endl;
-        return NOK;
-    }
-    if (nbBlackKings > 1)
-    {
-        std::cerr << "Invalid number of black kings. Maximum: 1. Given: " << nbBlackKings << std::endl;
-        return NOK;
-    }
-    if (nbWhiteKings != nbWhiteKingsStart)
-    {
-        std::cerr << "Invalid number of white kings. Expected: " << nbWhiteKingsStart << ". Given: " << nbWhiteKings << std::endl;
-        return NOK;
-    }
-    if (nbBlackKings != nbBlackKingsStart)
-    {
-        std::cerr << "Invalid number of black kings. Expected: " << nbBlackKingsStart << ". Given: " << nbBlackKings << std::endl;
-        return NOK;
+        int nbKings = piece_count(fenBoard, c, royal, v);
+        int nbKingsStart = piece_count(startFenBoard, c, royal, v);
+
+        if (nbKings > 1)
+        {
+            std::cerr << "Invalid number of " << (c == WHITE ? "white" : "black")
+                      << " kings. Maximum: 1. Given: " << nbKings << std::endl;
+            return NOK;
+        }
+        if (nbKings != nbKingsStart)
+        {
+            std::cerr << "Invalid number of " << (c == WHITE ? "white" : "black")
+                      << " kings. Expected: " << nbKingsStart << ". Given: " << nbKings << std::endl;
+            return NOK;
+        }
     }
     return OK;
 }
@@ -1017,7 +1040,32 @@ inline FenValidation validate_fen(const std::string& fen, const Variant* v, bool
     }
 
     // check for number of kings
-    if (v->pieceTypes & KING)
+    auto royal_piece = [&](Color c) {
+        PieceType royal = KING;
+        if (v->castlingKingIsRoyal)
+        {
+            PieceType castlingRoyal = v->castlingKingPiece[c];
+            if (castlingRoyal != NO_PIECE_TYPE && (v->pieceTypes & piece_set(castlingRoyal)))
+                royal = castlingRoyal;
+        }
+        return royal;
+    };
+
+    PieceType whiteRoyal = royal_piece(WHITE);
+    PieceType blackRoyal = royal_piece(BLACK);
+
+    bool enforceRoyalCount = false;
+    for (Color c : {WHITE, BLACK})
+    {
+        PieceType royal = c == WHITE ? whiteRoyal : blackRoyal;
+        if ((v->pieceTypes & piece_set(royal)) && piece_count(startFenParts[0], c, royal, v) > 0)
+        {
+            enforceRoyalCount = true;
+            break;
+        }
+    }
+
+    if (enforceRoyalCount)
     {
         // we have a royal king in this variant,
         // ensure that each side has exactly as many kings as in the starting position
@@ -1026,13 +1074,15 @@ inline FenValidation validate_fen(const std::string& fen, const Variant* v, bool
             return FEN_INVALID_NUMBER_OF_KINGS;
 
         // check for touching kings if there are exactly two royal kings on the board (excluding pocket)
+        PieceType touchWhite = (v->pieceTypes & piece_set(whiteRoyal)) ? whiteRoyal : KING;
+        PieceType touchBlack = (v->pieceTypes & piece_set(blackRoyal)) ? blackRoyal : KING;
         if (   v->kingType == KING
-            && piece_count(fenParts[0], WHITE, KING, v) - piece_count(pocket, WHITE, KING, v) == 1
-            && piece_count(fenParts[0], BLACK, KING, v) - piece_count(pocket, BLACK, KING, v) == 1)
+            && piece_count(fenParts[0], WHITE, touchWhite, v) - piece_count(pocket, WHITE, touchWhite, v) == 1
+            && piece_count(fenParts[0], BLACK, touchBlack, v) - piece_count(pocket, BLACK, touchBlack, v) == 1)
         {
             std::array<CharSquare, 2> kingPositions;
-            kingPositions[WHITE] = board.get_square_for_piece(v->pieceToChar[make_piece(WHITE, KING)]);
-            kingPositions[BLACK] = board.get_square_for_piece(v->pieceToChar[make_piece(BLACK, KING)]);
+            kingPositions[WHITE] = board.get_square_for_piece(v->pieceToChar[make_piece(WHITE, touchWhite)]);
+            kingPositions[BLACK] = board.get_square_for_piece(v->pieceToChar[make_piece(BLACK, touchBlack)]);
             if (check_touching_kings(board, kingPositions) == NOK)
                 return FEN_TOUCHING_KINGS;
         }
