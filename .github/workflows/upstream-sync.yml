@@ -23,6 +23,10 @@ on:
           - '1 year ago'
         default: '1 week ago'
 
+  pull_request:
+    branches:
+      - master
+
 jobs:
   sync_latest_from_upstream:
     runs-on: ubuntu-latest

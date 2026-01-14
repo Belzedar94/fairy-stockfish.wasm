@@ -8,6 +8,10 @@ on:
   workflow_dispatch:
     # Allow manual trigger
 
+  pull_request:
+    branches:
+      - master
+
 jobs:
   merge_branches:
     runs-on: ubuntu-latest
