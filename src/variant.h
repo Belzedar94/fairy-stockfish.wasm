@@ -66,6 +66,10 @@ struct Variant {
   bool blastOnCapture = false;
   PieceSet blastImmuneTypes = NO_PIECE_SET;
   PieceSet mutuallyImmuneTypes = NO_PIECE_SET;
+  // Allow capturing pieces of the same color (friendly capture)
+  bool selfCapture = false;
+  // Iron pieces: attempts to capture these piece types are illegal
+  PieceSet ironPieceTypes = NO_PIECE_SET;
   PieceSet petrifyOnCaptureTypes = NO_PIECE_SET;
   bool petrifyBlastPieces = false;
   bool doubleStep = true;
@@ -119,6 +123,17 @@ struct Variant {
   EnclosingRule flipEnclosedPieces = NO_ENCLOSING;
   bool freeDrops = false;
 
+  enum PotionType : int {
+      POTION_FREEZE,
+      POTION_JUMP,
+      POTION_TYPE_NB
+  };
+
+  bool potions = false;
+  PieceType potionPiece[POTION_TYPE_NB] = {NO_PIECE_TYPE, NO_PIECE_TYPE};
+  int potionCooldown[POTION_TYPE_NB] = {};
+  bool potionDropOnOccupied = false;
+
   // game end
   PieceSet nMoveRuleTypes[COLOR_NB] = {piece_set(PAWN), piece_set(PAWN)};
   int nMoveRule = 50;
@@ -170,6 +185,8 @@ struct Variant {
   PieceType nnueKing = KING;
   int nnueDimensions;
   bool nnueUsePockets;
+  int nnuePotionZoneIndexBase = -1;
+  int nnuePotionCooldownIndexBase = -1;
   int pieceSquareIndex[COLOR_NB][PIECE_NB];
   int pieceHandIndex[COLOR_NB][PIECE_NB];
   int kingSquareIndex[SQUARE_NB];
