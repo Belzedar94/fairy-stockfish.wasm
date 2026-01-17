@@ -48,7 +48,14 @@ else
 endif
 
 EM_COMMIT = $(shell git rev-parse --short HEAD)
-EM_UPSTREAM = $(shell git rev-parse --short $$(git merge-base HEAD upstream/master))
+EM_UPSTREAM = $(shell \
+	for ref in upstream/master origin/master; do \
+		if git rev-parse --verify "$$ref" >/dev/null 2>&1; then \
+			git rev-parse --short "$$(git merge-base HEAD "$$ref")"; \
+			exit 0; \
+		fi; \
+	done; \
+	git rev-parse --short HEAD)
 EM_EMSCRIPTEN = $(shell emsdk list | grep INSTALLED | head -n 1 | awk '{ print $$1 }')
 
 EXTRACXXFLAGS += \
