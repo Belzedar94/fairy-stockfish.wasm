@@ -313,13 +313,8 @@ public:
 
     if (!gameEnd)
       return "*";
-    if (result == 0) {
-      if (pos.material_counting())
-        result = pos.material_counting_result();
-
-      if (result == 0)
-        return "1/2-1/2";
-    }
+    if (result == 0)
+      return "1/2-1/2";
     if (pos.side_to_move() == BLACK)
       result = -result;
     if (result > 0)
@@ -387,7 +382,7 @@ public:
     for (PieceType pt = KING; pt >= PAWN; --pt) {
       for (int i = 0; i < pos.count_in_hand(c, pt); ++i) {
         // only create BLACK pieces in order to convert to lower case
-        pocket += std::string(1, pos.piece_to_char()[make_piece(BLACK, pt)]);
+        pocket += pos.piece_symbol(make_piece(BLACK, pt));
       }
     }
     return pocket;
@@ -405,7 +400,7 @@ public:
           stringBoard += '.';
           break;
         default:
-          stringBoard += pos.piece_to_char()[p];
+          stringBoard += pos.piece_symbol(p);
         }
       }
       if (r != RANK_1)
