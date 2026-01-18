@@ -5,7 +5,14 @@ this_dir=$(dirname "${BASH_SOURCE[0]}")
 uci_exe_default="node $this_dir/../public/uci.js"
 uci_exe=${uci_exe:-$uci_exe_default}
 
-if [ -z "$sign_ref" ]; then
+bench_file_default="$this_dir/../bench-signature.txt"
+bench_file_no_embedded="$this_dir/../bench-signature-no-embedded.txt"
+
+if [ -n "$UCI_NNUE_FILE" ] && [ -f "$bench_file_no_embedded" ]; then
+  sign_ref=$(cat "$bench_file_no_embedded")
+elif [ -z "$sign_ref" ] && [ -f "$bench_file_default" ]; then
+  sign_ref=$(cat "$bench_file_default")
+elif [ -z "$sign_ref" ]; then
   sign_ref=$(git log | grep "Bench:" | head -n 1 | awk '{print $NF}')
 fi
 
