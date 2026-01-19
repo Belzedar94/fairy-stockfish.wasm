@@ -48,6 +48,53 @@ namespace {
     return static_cast<Variant::PotionType>(Variant::POTION_TYPE_NB);
   }
 
+  inline Square potion_zone_center(const Position& pos, Variant::PotionType potion,
+                                   Bitboard zone) {
+    if (zone == Bitboard(0))
+        return SQ_NONE;
+    if (potion == Variant::POTION_JUMP)
+        return lsb(zone);
+    Bitboard candidates = zone;
+    while (candidates)
+    {
+        Square s = pop_lsb(candidates);
+        if (pos.freeze_zone_from_square(s) == zone)
+            return s;
+    }
+    return lsb(zone);
+  }
+
+  inline Bitboard potion_zone_from_center(const Position& pos, Variant::PotionType potion,
+                                          Square s) {
+    if (s == SQ_NONE)
+        return Bitboard(0);
+    if (potion == Variant::POTION_FREEZE)
+        return pos.freeze_zone_from_square(s);
+    return square_bb(s);
+  }
+
+  inline Square parse_fen_square(const Position& pos, const std::string& token) {
+    if (token.size() < 2)
+        return SQ_NONE;
+    char fileChar = char(tolower(token[0]));
+    if (fileChar < 'a' || fileChar > char('a' + pos.max_file()))
+        return SQ_NONE;
+    int file = fileChar - 'a';
+    int rank = 0;
+    for (size_t i = 1; i < token.size(); ++i)
+    {
+        if (!isdigit(token[i]))
+            return SQ_NONE;
+        rank = rank * 10 + (token[i] - '0');
+    }
+    if (rank <= 0)
+        return SQ_NONE;
+    int rankIndex = rank - 1;
+    if (rankIndex > pos.max_rank())
+        return SQ_NONE;
+    return make_square(File(file), Rank(rankIndex));
+  }
+
   struct SpellContextScope {
     Position& pos;
     bool active;
@@ -402,7 +449,87 @@ Position& Position::set(const Variant* v, const string& fenStr, bool isChess960,
               add_to_hand(Piece(idx));
       }
 
+  if (!sfen && potions_enabled())
+  {
+      std::string potionState;
+      ss >> std::ws;
+      if (ss.peek() == '{')
+      {
+          ss >> token;
+          while (ss >> token)
+          {
+              if (token == '}')
+                  break;
+              if (!isspace(token))
+                  potionState.push_back(char(token));
+          }
+      }
+
+      auto parse_potion_state = [&](const std::string& state) {
+          size_t start = 0;
+          const int maxCooldown = (1u << POTION_COOLDOWN_BITS) - 1;
+          while (start < state.size())
+          {
+              size_t end = state.find(',', start);
+              std::string entry = state.substr(start, end == std::string::npos ? end : end - start);
+              if (entry.size() >= 4)
+              {
+                  char pieceChar = entry[0];
+                  Color c = islower(pieceChar) ? BLACK : WHITE;
+                  Variant::PotionType potion = static_cast<Variant::PotionType>(Variant::POTION_TYPE_NB);
+                  for (int pt = 0; pt < Variant::POTION_TYPE_NB; ++pt)
+                  {
+                      Variant::PotionType ptEnum = static_cast<Variant::PotionType>(pt);
+                      PieceType potionPiece = potion_piece(ptEnum);
+                      if (potionPiece == NO_PIECE_TYPE)
+                          continue;
+                      char expected = piece_to_char()[make_piece(WHITE, potionPiece)];
+                      if (tolower(expected) == tolower(pieceChar))
+                      {
+                          potion = ptEnum;
+                          break;
+                      }
+                  }
+
+                  size_t at = entry.find('@', 1);
+                  size_t colon = entry.find(':', at == std::string::npos ? 0 : at + 1);
+                  if (potion != Variant::POTION_TYPE_NB && at != std::string::npos && colon != std::string::npos)
+                  {
+                      std::string squareToken = entry.substr(at + 1, colon - at - 1);
+                      std::string cooldownToken = entry.substr(colon + 1);
+                      Square center = SQ_NONE;
+                      if (!squareToken.empty() && squareToken != "-")
+                          center = parse_fen_square(*this, squareToken);
+
+                      int cooldown = 0;
+                      for (char ch : cooldownToken)
+                      {
+                          if (!isdigit(ch))
+                          {
+                              cooldown = 0;
+                              break;
+                          }
+                          cooldown = cooldown * 10 + (ch - '0');
+                      }
+                      if (cooldown > maxCooldown)
+                          cooldown = maxCooldown;
+
+                      st->potionCooldown[c][potion] = cooldown;
+                      st->potionZones[c][potion] = potion_zone_from_center(*this, potion, center);
+                  }
+              }
+              if (end == std::string::npos)
+                  break;
+              start = end + 1;
+          }
+      };
+
+      if (!potionState.empty())
+          parse_potion_state(potionState);
+  }
+
   // 2. Active color
+  ss >> std::ws;
   ss >> token;
   sideToMove = (token != (sfen ? 'w' : 'b') ? WHITE : BLACK);  // Invert colors for SFEN
   ss >> token;
@@ -634,10 +761,11 @@ void Position::set_castling_right(Color c, Square rfrom) {
 
 void Position::set_check_info(StateInfo* si) const {
 
-  si->blockersForKing[WHITE] = slider_blockers(pieces(BLACK), count<KING>(WHITE) ? square<KING>(WHITE) : SQ_NONE, si->pinners[BLACK], BLACK);
-  si->blockersForKing[BLACK] = slider_blockers(pieces(WHITE), count<KING>(BLACK) ? square<KING>(BLACK) : SQ_NONE, si->pinners[WHITE], WHITE);
+  PieceType royal = royal_piece_type();
+  si->blockersForKing[WHITE] = slider_blockers(pieces(BLACK), count(WHITE, royal) ? square(WHITE, royal) : SQ_NONE, si->pinners[BLACK], BLACK);
+  si->blockersForKing[BLACK] = slider_blockers(pieces(WHITE), count(BLACK, royal) ? square(BLACK, royal) : SQ_NONE, si->pinners[WHITE], WHITE);
 
-  Square ksq = count<KING>(~sideToMove) ? square<KING>(~sideToMove) : SQ_NONE;
+  Square ksq = count(~sideToMove, royal) ? square(~sideToMove, royal) : SQ_NONE;
 
   // For unused piece types, the check squares are left uninitialized
   si->nonSlidingRiders = 0;
@@ -651,7 +779,7 @@ void Position::set_check_info(StateInfo* si) const {
           si->nonSlidingRiders |= pieces(pt);
   }
   si->shak = si->checkersBB & (byTypeBB[KNIGHT] | byTypeBB[ROOK] | byTypeBB[BERS]);
-  si->bikjang = var->bikjangRule && ksq != SQ_NONE ? bool(attacks_bb(sideToMove, ROOK, ksq, pieces()) & pieces(sideToMove, KING)) : false;
+  si->bikjang = var->bikjangRule && ksq != SQ_NONE ? bool(attacks_bb(sideToMove, ROOK, ksq, pieces()) & pieces(sideToMove, royal)) : false;
   si->chased = var->chasingRule ? chased() : Bitboard(0);
   si->legalCapture = NO_VALUE;
   if (var->extinctionPseudoRoyal)
@@ -681,7 +809,8 @@ void Position::set_state(StateInfo* si) const {
   si->key = si->materialKey = 0;
   si->pawnKey = Zobrist::noPawns;
   si->nonPawnMaterial[WHITE] = si->nonPawnMaterial[BLACK] = VALUE_ZERO;
-  si->checkersBB = count<KING>(sideToMove) ? attackers_to(square<KING>(sideToMove), ~sideToMove) : Bitboard(0);
+  PieceType royal = royal_piece_type();
+  si->checkersBB = count(sideToMove, royal) ? attackers_to(square(sideToMove, royal), ~sideToMove) : Bitboard(0);
   si->move = MOVE_NONE;
 
   set_check_info(si);
@@ -834,6 +963,38 @@ string Position::fen(bool sfen, bool showPromoted, int countStarted, std::string
                   ss << std::string(pieceCountInHand[c][pt], piece_to_char()[make_piece(c, pt)]);
               }
       ss << ']';
+  }
+
+  if (potions_enabled())
+  {
+      std::string potionState;
+      const int maxCooldown = (1u << POTION_COOLDOWN_BITS) - 1;
+      for (Color c : {WHITE, BLACK})
+          for (int pt = 0; pt < Variant::POTION_TYPE_NB; ++pt)
+          {
+              Variant::PotionType potion = static_cast<Variant::PotionType>(pt);
+              PieceType potionPiece = potion_piece(potion);
+              if (potionPiece == NO_PIECE_TYPE)
+                  continue;
+              if (!potionState.empty())
+                  potionState += ",";
+              potionState += piece_to_char()[make_piece(c, potionPiece)];
+              potionState += "@";
+              Bitboard zone = potion_zone(c, potion);
+              if (zone)
+                  potionState += UCI::square(*this, potion_zone_center(*this, potion, zone));
+              else
+                  potionState += "-";
+              potionState += ":";
+              int cooldown = potion_cooldown(c, potion);
+              if (cooldown < 0)
+                  cooldown = 0;
+              if (cooldown > maxCooldown)
+                  cooldown = maxCooldown;
+              potionState += std::to_string(cooldown);
+          }
+      if (!potionState.empty())
+          ss << " {" << potionState << "}";
   }
 
   ss << (sideToMove == WHITE ? " w " : " b ");
@@ -1000,42 +1161,45 @@ Bitboard Position::slider_blockers(Bitboard sliders, Square s, Bitboard& pinners
 
 Bitboard Position::attackers_to(Square s, Bitboard occupied, Color c, Bitboard janggiCannons) const {
 
+  const Bitboard active = potions_enabled() ? ~freeze_squares() : ~Bitboard(0);
+
   // Use a faster version for variants with moderate rule variations
   if (var->fastAttacks)
   {
-      return  (pawn_attacks_bb(~c, s)          & pieces(c, PAWN))
-            | (attacks_bb<KNIGHT>(s)           & pieces(c, KNIGHT, ARCHBISHOP, CHANCELLOR))
-            | (attacks_bb<  ROOK>(s, occupied) & pieces(c, ROOK, QUEEN, CHANCELLOR))
-            | (attacks_bb<BISHOP>(s, occupied) & pieces(c, BISHOP, QUEEN, ARCHBISHOP))
-            | (attacks_bb<KING>(s)             & pieces(c, KING, COMMONER));
+      return  (pawn_attacks_bb(~c, s)          & (pieces(c, PAWN) & active))
+            | (attacks_bb<KNIGHT>(s)           & (pieces(c, KNIGHT, ARCHBISHOP, CHANCELLOR) & active))
+            | (attacks_bb<  ROOK>(s, occupied) & (pieces(c, ROOK, QUEEN, CHANCELLOR) & active))
+            | (attacks_bb<BISHOP>(s, occupied) & (pieces(c, BISHOP, QUEEN, ARCHBISHOP) & active))
+            | (attacks_bb<KING>(s)             & (pieces(c, KING, COMMONER) & active));
   }
 
   // Use a faster version for selected fairy pieces
   if (var->fastAttacks2)
   {
-      return  (pawn_attacks_bb(~c, s)             & pieces(c, PAWN, BREAKTHROUGH_PIECE, GOLD))
-            | (attacks_bb<KNIGHT>(s)              & pieces(c, KNIGHT))
-            | (attacks_bb<  ROOK>(s, occupied)    & (  pieces(c, ROOK, QUEEN, DRAGON)
-                                                     | (pieces(c, LANCE) & PseudoAttacks[~c][LANCE][s])))
-            | (attacks_bb<BISHOP>(s, occupied)    & pieces(c, BISHOP, QUEEN, DRAGON_HORSE))
-            | (attacks_bb<KING>(s)                & pieces(c, KING, COMMONER))
-            | (attacks_bb<FERS>(s)                & pieces(c, FERS, DRAGON, SILVER))
-            | (attacks_bb<WAZIR>(s)               & pieces(c, WAZIR, DRAGON_HORSE, GOLD))
-            | (LeaperAttacks[~c][SHOGI_KNIGHT][s] & pieces(c, SHOGI_KNIGHT))
-            | (LeaperAttacks[~c][SHOGI_PAWN][s]   & pieces(c, SHOGI_PAWN, SILVER));
+      return  (pawn_attacks_bb(~c, s)             & (pieces(c, PAWN, BREAKTHROUGH_PIECE, GOLD) & active))
+            | (attacks_bb<KNIGHT>(s)              & (pieces(c, KNIGHT) & active))
+            | (attacks_bb<  ROOK>(s, occupied)    & (  (pieces(c, ROOK, QUEEN, DRAGON) & active)
+                                                     | ((pieces(c, LANCE) & active) & PseudoAttacks[~c][LANCE][s])))
+            | (attacks_bb<BISHOP>(s, occupied)    & (pieces(c, BISHOP, QUEEN, DRAGON_HORSE) & active))
+            | (attacks_bb<KING>(s)                & (pieces(c, KING, COMMONER) & active))
+            | (attacks_bb<FERS>(s)                & (pieces(c, FERS, DRAGON, SILVER) & active))
+            | (attacks_bb<WAZIR>(s)               & (pieces(c, WAZIR, DRAGON_HORSE, GOLD) & active))
+            | (LeaperAttacks[~c][SHOGI_KNIGHT][s] & (pieces(c, SHOGI_KNIGHT) & active))
+            | (LeaperAttacks[~c][SHOGI_PAWN][s]   & (pieces(c, SHOGI_PAWN, SILVER) & active));
   }
 
   Bitboard b = 0;
   for (PieceSet ps = piece_types(); ps;)
   {
       PieceType pt = pop_lsb(ps);
-      if (board_bb(c, pt) & s)
+      Bitboard activePieces = pieces(c, pt) & active;
+      if ((board_bb(c, pt) & s) && activePieces)
       {
           PieceType move_pt = pt == KING ? king_type() : pt;
           // Consider asymmetrical moves (e.g., horse)
           if (AttackRiderTypes[move_pt] & ASYMMETRICAL_RIDERS)
           {
-              Bitboard asymmetricals = PseudoAttacks[~c][move_pt][s] & pieces(c, pt);
+              Bitboard asymmetricals = PseudoAttacks[~c][move_pt][s] & activePieces;
               while (asymmetricals)
               {
                   Square s2 = pop_lsb(asymmetricals);
@@ -1044,9 +1208,11 @@ Bitboard Position::attackers_to(Square s, Bitboard occupied, Color c, Bitboard j
               }
           }
           else if (pt == JANGGI_CANNON)
-              b |= attacks_bb(~c, move_pt, s, occupied) & attacks_bb(~c, move_pt, s, occupied & ~janggiCannons) & pieces(c, JANGGI_CANNON);
+              b |= attacks_bb(~c, move_pt, s, occupied)
+                & attacks_bb(~c, move_pt, s, occupied & ~janggiCannons)
+                & activePieces;
           else
-              b |= attacks_bb(~c, move_pt, s, occupied) & pieces(c, pt);
+              b |= attacks_bb(~c, move_pt, s, occupied) & activePieces;
       }
   }
 
@@ -1055,19 +1221,19 @@ Bitboard Position::attackers_to(Square s, Bitboard occupied, Color c, Bitboard j
   {
       Bitboard diags = 0;
       if (king_type() == WAZIR)
-          diags |= attacks_bb(~c, FERS, s, occupied) & pieces(c, KING);
-      diags |= attacks_bb(~c, FERS, s, occupied) & pieces(c, WAZIR);
-      diags |= attacks_bb(~c, PAWN, s, occupied) & pieces(c, SOLDIER);
-      diags |= rider_attacks_bb<RIDER_BISHOP>(s, occupied) & pieces(c, ROOK);
+          diags |= attacks_bb(~c, FERS, s, occupied) & (pieces(c, KING) & active);
+      diags |= attacks_bb(~c, FERS, s, occupied) & (pieces(c, WAZIR) & active);
+      diags |= attacks_bb(~c, PAWN, s, occupied) & (pieces(c, SOLDIER) & active);
+      diags |= rider_attacks_bb<RIDER_BISHOP>(s, occupied) & (pieces(c, ROOK) & active);
       diags |=  rider_attacks_bb<RIDER_CANNON_DIAG>(s, occupied)
               & rider_attacks_bb<RIDER_CANNON_DIAG>(s, occupied & ~janggiCannons)
-              & pieces(c, JANGGI_CANNON);
+              & (pieces(c, JANGGI_CANNON) & active);
       b |= diags & diagonal_lines();
   }
 
   // Unpromoted soldiers
   if (b & pieces(SOLDIER) && relative_rank(c, s, max_rank()) < var->soldierPromotionRank)
-      b ^= b & pieces(SOLDIER) & ~PseudoAttacks[~c][SHOGI_PAWN][s];
+      b ^= b & (pieces(SOLDIER) & active) & ~PseudoAttacks[~c][SHOGI_PAWN][s];
 
   return b;
 }
@@ -1146,6 +1312,7 @@ bool Position::legal(Move m) const {
   }
 
   SpellContextScope spellScope(*this, freezeExtra, jumpRemoved);
+  PieceType royal = royal_piece_type();
 
   if (type_of(m) != DROP && (freeze_squares() & from))
       return false;
@@ -1153,7 +1320,7 @@ bool Position::legal(Move m) const {
       return false;
 
   assert(color_of(moved_piece(m)) == us);
-  assert(!count<KING>(us) || piece_on(square<KING>(us)) == make_piece(us, KING));
+  assert(!count(us, royal) || piece_on(square(us, royal)) == make_piece(us, royal));
   assert(board_bb() & to);
 
   // Illegal checks
@@ -1324,9 +1491,9 @@ bool Position::legal(Move m) const {
   // En passant captures are a tricky special case. Because they are rather
   // uncommon, we do it simply by testing whether the king is attacked after
   // the move is made.
-  if (type_of(m) == EN_PASSANT && count<KING>(us))
+  if (type_of(m) == EN_PASSANT && count(us, royal))
   {
-      Square ksq = square<KING>(us);
+      Square ksq = square(us, royal);
       Square capsq = capture_square(to);
       Bitboard occupied = (pieces() ^ from ^ capsq) | to;
 
@@ -1352,13 +1519,13 @@ bool Position::legal(Move m) const {
       if (freeze_squares() & to_sq(m))
           return false;
 
-      // Non-royal pieces can not be impeded from castling
-      if (type_of(piece_on(from)) != KING)
+      // Only the castling king piece is subject to attack checks
+      if (type_of(piece_on(from)) != castling_king_piece(us))
           return true;
 
       for (Square s = to; s != from; s += step)
           if (attackers_to(s, ~us)
-              || (var->flyingGeneral && (attacks_bb(~us, ROOK, s, pieces() ^ from) & pieces(~us, KING))))
+              || (var->flyingGeneral && (attacks_bb(~us, ROOK, s, pieces() ^ from) & pieces(~us, royal))))
               return false;
 
       // In case of Chess960, verify if the Rook blocks some checks
@@ -1372,24 +1539,24 @@ bool Position::legal(Move m) const {
   // In case of bikjang passing is always allowed, even when in check
   if (st->bikjang && is_pass(m))
       return true;
-  if ((var->flyingGeneral && count<KING>(us)) || st->bikjang)
+  if ((var->flyingGeneral && count(us, royal)) || st->bikjang)
   {
-      Square s = type_of(moved_piece(m)) == KING ? to : square<KING>(us);
-      if (attacks_bb(~us, ROOK, s, occupied) & pieces(~us, KING) & ~square_bb(to))
+      Square s = type_of(moved_piece(m)) == royal ? to : square(us, royal);
+      if (attacks_bb(~us, ROOK, s, occupied) & pieces(~us, royal) & ~square_bb(to))
           return false;
   }
 
   // Makpong rule
-  if (var->makpongRule && checkers() && type_of(moved_piece(m)) == KING && (checkers() ^ to))
+  if (var->makpongRule && checkers() && type_of(moved_piece(m)) == royal && (checkers() ^ to))
       return false;
 
   // If the moving piece is a king, check whether the destination square is
   // attacked by the opponent.
-  if (type_of(moved_piece(m)) == KING)
+  if (type_of(moved_piece(m)) == royal)
       return !attackers_to(to, occupied, ~us);
 
   // Return early when without king
-  if (!count<KING>(us))
+  if (!count(us, royal))
       return true;
 
   Bitboard janggiCannons = pieces(JANGGI_CANNON);
@@ -1399,7 +1566,7 @@ bool Position::legal(Move m) const {
       janggiCannons ^= to;
 
   // A non-king move is legal if the king is not under attack after the move.
-  return !(attackers_to(square<KING>(us), occupied, ~us, janggiCannons) & ~SquareBB[to]);
+  return !(attackers_to(square(us, royal), occupied, ~us, janggiCannons) & ~SquareBB[to]);
 }
 
 
@@ -1413,6 +1580,7 @@ bool Position::pseudo_legal(const Move m) const {
   Square from = from_sq(m);
   Square to = to_sq(m);
   Piece pc = moved_piece(m);
+  PieceType royal = royal_piece_type();
 
   // Illegal moves to squares outside of board or to wall squares
   if (!(board_bb() & to))
@@ -1458,8 +1626,16 @@ bool Position::pseudo_legal(const Move m) const {
       return false;
 
   if (type_of(m) != NORMAL || is_gating(m))
+  {
+      if (is_gating(m) && potions_enabled() && checkers())
+      {
+          Variant::PotionType potion = potion_type_from_piece(var, gating_type(m));
+          if (potion != Variant::POTION_TYPE_NB)
+              return legal(m);
+      }
       return checkers() ? MoveList<    EVASIONS>(*this).contains(m)
                         : MoveList<NON_EVASIONS>(*this).contains(m);
+  }
 
   //if walling, and walling is not optional, or they didn't move, do the checks.
   if (walling() && (!var->wallOrMove || (from==to)))
@@ -1509,7 +1685,7 @@ bool Position::pseudo_legal(const Move m) const {
           return false;
 
       // Friendly kings are never capturable, even when self-capture is enabled
-      if (type_of(piece_on(to)) == KING)
+      if (type_of(piece_on(to)) == royal)
           return false;
   }
 
@@ -1544,7 +1720,7 @@ bool Position::pseudo_legal(const Move m) const {
   // kind of moves are filtered out here.
   if (checkers() && !(checkers() & non_sliding_riders()))
   {
-      if (type_of(pc) != KING)
+      if (type_of(pc) != royal)
       {
           // Double check? In this case a king move is required
           if (more_than_one(checkers()))
@@ -1552,8 +1728,8 @@ bool Position::pseudo_legal(const Move m) const {
 
           // Our move must be a blocking evasion or a capture of the checking piece
           Square checksq = lsb(checkers());
-          if (  !(between_bb(square<KING>(us), lsb(checkers())) & to)
-              || ((LeaperAttacks[~us][type_of(piece_on(checksq))][checksq] & square<KING>(us)) && !(checkers() & to)))
+          if (  !(between_bb(square(us, royal), lsb(checkers())) & to)
+              || ((LeaperAttacks[~us][type_of(piece_on(checksq))][checksq] & square(us, royal)) && !(checkers() & to)))
               return false;
       }
       // In case of king moves under check we have to remove king so as to catch
@@ -1597,6 +1773,7 @@ bool Position::gives_check(Move m) const {
   }
 
   SpellContextScope spellScope(*this, freezeExtra, jumpRemoved);
+  PieceType royal = royal_piece_type();
 
   if (type_of(m) != DROP && (freeze_squares() & from))
       return false;
@@ -1604,7 +1781,7 @@ bool Position::gives_check(Move m) const {
       return false;
 
   // No check possible without king
-  if (!count<KING>(~sideToMove))
+  if (!count(~sideToMove, royal))
       return false;
 
   Bitboard occupied = (type_of(m) != DROP ? pieces() ^ from : pieces()) | to;
@@ -1621,12 +1798,12 @@ bool Position::gives_check(Move m) const {
       PieceType pt = type_of(moved_piece(m));
       if (pt == JANGGI_CANNON)
       {
-          if (attacks_bb(sideToMove, pt, to, occupied) & attacks_bb(sideToMove, pt, to, occupied & ~janggiCannons) & square<KING>(~sideToMove))
+          if (attacks_bb(sideToMove, pt, to, occupied) & attacks_bb(sideToMove, pt, to, occupied & ~janggiCannons) & square(~sideToMove, royal))
               return true;
       }
       else if (AttackRiderTypes[pt] & (HOPPING_RIDERS | ASYMMETRICAL_RIDERS))
       {
-          if (attacks_bb(sideToMove, pt, to, occupied) & square<KING>(~sideToMove))
+          if (attacks_bb(sideToMove, pt, to, occupied) & square(~sideToMove, royal))
               return true;
       }
       else if (check_squares(pt) & to)
@@ -1635,12 +1812,12 @@ bool Position::gives_check(Move m) const {
 
   // Is there a discovered check?
   if (  ((type_of(m) != DROP && (blockers_for_king(~sideToMove) & from)) || (non_sliding_riders() & pieces(sideToMove)))
-      && attackers_to(square<KING>(~sideToMove), occupied, sideToMove, janggiCannons) & occupied)
+      && attackers_to(square(~sideToMove, royal), occupied, sideToMove, janggiCannons) & occupied)
       return true;
 
   // Is there a check by gated pieces?
   if (    is_gating(m)
-      && attacks_bb(sideToMove, gating_type(m), gating_square(m), (pieces() ^ from) | to) & square<KING>(~sideToMove))
+      && attacks_bb(sideToMove, gating_type(m), gating_square(m), (pieces() ^ from) | to) & square(~sideToMove, royal))
       return true;
 
   // Petrified piece can't give check
@@ -1648,15 +1825,15 @@ bool Position::gives_check(Move m) const {
       return false;
 
   // Is there a check by special diagonal moves?
-  if (more_than_one(diagonal_lines() & (to | square<KING>(~sideToMove))))
+  if (more_than_one(diagonal_lines() & (to | square(~sideToMove, royal))))
   {
       PieceType pt = type_of(moved_piece(m));
       PieceType diagType = pt == WAZIR ? FERS : pt == SOLDIER ? PAWN : pt == ROOK ? BISHOP : NO_PIECE_TYPE;
-      if (diagType && (attacks_bb(sideToMove, diagType, to, occupied) & square<KING>(~sideToMove)))
+      if (diagType && (attacks_bb(sideToMove, diagType, to, occupied) & square(~sideToMove, royal)))
           return true;
       else if (pt == JANGGI_CANNON && (  rider_attacks_bb<RIDER_CANNON_DIAG>(to, occupied)
                                        & rider_attacks_bb<RIDER_CANNON_DIAG>(to, occupied & ~janggiCannons)
-                                       & square<KING>(~sideToMove)))
+                                       & square(~sideToMove, royal)))
           return true;
   }
 
@@ -1668,13 +1845,13 @@ bool Position::gives_check(Move m) const {
       return false;
 
   case PROMOTION:
-      return attacks_bb(sideToMove, promotion_type(m), to, pieces() ^ from) & square<KING>(~sideToMove);
+      return attacks_bb(sideToMove, promotion_type(m), to, pieces() ^ from) & square(~sideToMove, royal);
 
   case PIECE_PROMOTION:
-      return attacks_bb(sideToMove, promoted_piece_type(type_of(moved_piece(m))), to, pieces() ^ from) & square<KING>(~sideToMove);
+      return attacks_bb(sideToMove, promoted_piece_type(type_of(moved_piece(m))), to, pieces() ^ from) & square(~sideToMove, royal);
 
   case PIECE_DEMOTION:
-      return attacks_bb(sideToMove, type_of(unpromoted_piece_on(from)), to, pieces() ^ from) & square<KING>(~sideToMove);
+      return attacks_bb(sideToMove, type_of(unpromoted_piece_on(from)), to, pieces() ^ from) & square(~sideToMove, royal);
 
   // En passant capture with check? We have already handled the case
   // of direct checks and ordinary discovered check, so the only case we
@@ -1685,7 +1862,7 @@ bool Position::gives_check(Move m) const {
       Square capsq = capture_square(to);
       Bitboard b = (pieces() ^ from ^ capsq) | to;
 
-      return attackers_to(square<KING>(~sideToMove), b) & pieces(sideToMove) & b;
+      return attackers_to(square(~sideToMove, royal), b) & pieces(sideToMove) & b;
   }
   default: //CASTLING
   {
@@ -1698,11 +1875,11 @@ bool Position::gives_check(Move m) const {
       // Is there a discovered check?
       if (   castling_rank(WHITE) > RANK_1
           && ((blockers_for_king(~sideToMove) & rfrom) || (non_sliding_riders() & pieces(sideToMove)))
-          && attackers_to(square<KING>(~sideToMove), (pieces() ^ kfrom ^ rfrom) | rto | kto, sideToMove))
+          && attackers_to(square(~sideToMove, royal), (pieces() ^ kfrom ^ rfrom) | rto | kto, sideToMove))
           return true;
 
-      return   (PseudoAttacks[sideToMove][type_of(piece_on(rfrom))][rto] & square<KING>(~sideToMove))
-            && (attacks_bb(sideToMove, type_of(piece_on(rfrom)), rto, (pieces() ^ kfrom ^ rfrom) | rto | kto) & square<KING>(~sideToMove));
+      return   (PseudoAttacks[sideToMove][type_of(piece_on(rfrom))][rto] & square(~sideToMove, royal))
+            && (attacks_bb(sideToMove, type_of(piece_on(rfrom)), rto, (pieces() ^ kfrom ^ rfrom) | rto | kto) & square(~sideToMove, royal));
   }
   }
 }
@@ -2340,7 +2517,8 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
   // Update the key with the final value
   st->key = k;
   // Calculate checkers bitboard (if move gives check)
-  st->checkersBB = givesCheck ? attackers_to(square<KING>(them), us) & pieces(us) : Bitboard(0);
+  PieceType royal = royal_piece_type();
+  st->checkersBB = (givesCheck && count(them, royal)) ? attackers_to(square(them, royal), us) & pieces(us) : Bitboard(0);
   assert(givesCheck == bool(st->checkersBB));
 
   sideToMove = ~sideToMove;
@@ -2732,6 +2910,7 @@ bool Position::see_ge(Move m, Value threshold) const {
       return VALUE_ZERO >= threshold;
 
   Square from = from_sq(m), to = to_sq(m);
+  Piece victim = piece_on(to);
 
   // nCheck
   if (check_counting() && color_of(moved_piece(m)) == sideToMove && gives_check(m))

@@ -10,10 +10,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-24.04, windows-2022, macos-14]
+        os: [ubuntu-24.04, windows-2022, macos-15-intel]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
 
       # Used to host cibuildwheel
       - uses: actions/setup-python@v6
@@ -30,7 +30,7 @@ jobs:
           CIBW_SKIP: "pp* *-win32 *-manylinux_i686 *-musllinux_* cp36-* cp37-* cp38"
           CIBW_TEST_COMMAND: python {project}/test.py
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v4
         with:
           name: dist-wheel-${{ matrix.os }}
           path: ./wheelhouse/*.whl
@@ -39,7 +39,7 @@ jobs:
     name: Build source distribution
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: '3.9'
@@ -47,7 +47,7 @@ jobs:
       - name: Build sdist
         run: python setup.py sdist
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v4
         with:
           name: dist-source
           path: dist/*.tar.gz

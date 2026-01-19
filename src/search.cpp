@@ -88,6 +88,19 @@ namespace {
     return d > 14 ? 73 : 6 * d * d + 229 * d - 215;
   }
 
+  bool is_potion_gating_move(const Position& pos, Move m) {
+
+    if (!pos.potions_enabled() || !is_gating(m))
+        return false;
+
+    PieceType gatingPiece = gating_type(m);
+    for (int idx = 0; idx < Variant::POTION_TYPE_NB; ++idx)
+        if (pos.potion_piece(static_cast<Variant::PotionType>(idx)) == gatingPiece)
+            return true;
+
+    return false;
+  }
+
   // Add a small random component to draw evaluations to avoid 3-fold blindness
   Value value_draw(Thread* thisThread) {
     return VALUE_DRAW + Value(2 * (thisThread->nodes & 1) - 1);
@@ -927,6 +940,7 @@ namespace {
 
     // Step 7. Futility pruning: child node (~50 Elo)
     if (   !PvNode
+        && !ss->inCheck
         &&  depth < 9 - 3 * pos.blast_on_capture()
         &&  eval - futility_margin(depth, improving) * (1 + pos.check_counting() + 2 * pos.must_capture() + pos.extinction_single_piece() + !pos.checking_permitted()) >= beta
         &&  eval < VALUE_KNOWN_WIN) // Do not return unproven wins
@@ -934,6 +948,7 @@ namespace {
 
     // Step 8. Null move search with verification search (~40 Elo)
     if (   !PvNode
+        && !ss->inCheck
         && (ss-1)->currentMove != MOVE_NULL
         && (ss-1)->statScore < 23767
         &&  eval >= beta
@@ -1100,7 +1115,6 @@ moves_loop: // When in check, search starts from here
                          && ttMove
                          && (tte->bound() & BOUND_UPPER)
                          && tte->depth() >= depth;
-
     // Step 12. Loop through all pseudo-legal moves until no moves remain
     // or a beta cutoff occurs.
     while ((move = mp.next_move(moveCountPruning)) != MOVE_NONE)
@@ -1153,7 +1167,6 @@ moves_loop: // When in check, search starts from here
           if (pos.must_capture() && pos.attackers_to(to_sq(move), ~us))
           {}
           else
-
           if (   captureOrPromotion
               || givesCheck)
           {
@@ -1263,6 +1276,8 @@ moves_loop: // When in check, search starts from here
 
       // Add extension to new depth
       newDepth += extension;
+      if (is_potion_gating_move(pos, move) && depth >= 3)
+          newDepth = std::max(newDepth - (givesCheck || captureOrPromotion ? 1 : 2), 0);
       ss->doubleExtensions = (ss-1)->doubleExtensions + (extension == 2);
 
       // Speculative prefetch as early as possible
