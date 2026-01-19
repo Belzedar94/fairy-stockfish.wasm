@@ -1,7 +1,6 @@
 name: fairy
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 jobs:
   fairy:
     name: ${{ matrix.config.name }}

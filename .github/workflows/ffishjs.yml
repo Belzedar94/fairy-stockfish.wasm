@@ -1,8 +1,7 @@
 name: ffishjs
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 env:
   EM_VERSION: 1.39.16
