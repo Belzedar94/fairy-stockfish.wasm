@@ -2933,7 +2933,6 @@ bool Position::see_ge(Move m, Value threshold) const {
   if (must_capture() || !checking_permitted() || is_gating(m) || count<CLOBBER_PIECE>() == count<ALL_PIECES>())
       return VALUE_ZERO >= threshold;
 
-  Piece victim = piece_on(to);
   int victimValue = PieceValue[MG][victim];
   if (victim != NO_PIECE && color_of(victim) == color_of(moved_piece(m)) && self_capture())
       victimValue = -victimValue;
