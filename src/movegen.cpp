@@ -517,7 +517,7 @@ namespace {
                 moveList = generate_drops<Us, Type>(pos, moveList, pop_lsb(ps), target & ~pos.pieces(~Us));
 
         // Castling with non-king piece
-        if (!pos.count(Us, royal) && Type != CAPTURES && pos.can_castle(Us & ANY_CASTLING))
+        if (!pos.count(Us, royal) && Type != CAPTURES && !pos.checkers() && pos.can_castle(Us & ANY_CASTLING))
         {
             Square from = pos.castling_king_square(Us);
             for(CastlingRights cr : { Us & KING_SIDE, Us & QUEEN_SIDE } )
@@ -575,7 +575,7 @@ namespace {
         if (pos.pass(Us))
             *moveList++ = make<SPECIAL>(ksq, ksq);
 
-        if ((Type == QUIETS || Type == NON_EVASIONS) && pos.can_castle(Us & ANY_CASTLING))
+        if ((Type == QUIETS || Type == NON_EVASIONS) && !pos.checkers() && pos.can_castle(Us & ANY_CASTLING))
             for (CastlingRights cr : { Us & KING_SIDE, Us & QUEEN_SIDE } )
                 if (!pos.castling_impeded(cr) && pos.can_castle(cr))
                     moveList = make_move_and_gating<CASTLING>(pos, moveList, Us,ksq, pos.castling_rook_square(cr));
@@ -623,6 +623,14 @@ namespace {
         if (potion == Variant::POTION_JUMP)
             candidates &= allPieces;
 
+        ExtMove* freezeStart = baseStart;
+        ExtMove* freezeEnd = baseEnd;
+        static thread_local ExtMove freezeMoves[MAX_MOVES];
+        if (Type == EVASIONS && potion == Variant::POTION_FREEZE)
+        {
+            freezeStart = freezeMoves;
+            freezeEnd = generate_all_impl<Us, NON_EVASIONS>(pos, freezeStart);
+        }
         auto generate_for_gate = [&](Square gate, int gateScore) {
 
             if (potion == Variant::POTION_JUMP && !(allPieces & gate))
@@ -630,13 +638,15 @@ namespace {
 
             if (potion == Variant::POTION_FREEZE)
             {
-                // Freeze only restricts moves, so reuse the base list and filter by frozen squares.
-                Bitboard frozen = baseFrozen | pos.freeze_zone_from_square(gate);
+                // New freeze zones apply after the move, so only existing frozen squares block it.
+                Bitboard frozen = baseFrozen;
                 ExtMove* write = cur;
-                for (ExtMove* it = baseStart; it != baseEnd; ++it)
+                for (ExtMove* it = freezeStart; it != freezeEnd; ++it)
                 {
                     Move base = it->move;
                     if (is_gating(base))
+                        continue;
+                    if (from_sq(base) == gate)
                         continue;
 
                     MoveType mt = type_of(base);
@@ -870,16 +880,112 @@ namespace {
 ///
 /// Returns a pointer to the end of the move list.
 
+ExtMove* generate_base(GenType Type, const Position& pos, ExtMove* moveList);
+ExtMove* generate_potions(GenType Type, const Position& pos, ExtMove* baseStart, ExtMove* baseEnd);
+
 template<GenType Type>
 ExtMove* generate(const Position& pos, ExtMove* moveList) {
 
   static_assert(Type != LEGAL, "Unsupported type in generate()");
-  assert((Type == EVASIONS) == (bool)pos.checkers());
+  const bool needsEvasion = pos.checkers() && !pos.allow_self_check();
+  assert((Type == EVASIONS) == needsEvasion);
+  (void)needsEvasion;
 
   Color us = pos.side_to_move();
 
-  return us == WHITE ? generate_all<WHITE, Type>(pos, moveList)
-                     : generate_all<BLACK, Type>(pos, moveList);
+  ExtMove* end = us == WHITE ? generate_all<WHITE, Type>(pos, moveList)
+                             : generate_all<BLACK, Type>(pos, moveList);
+
+  // In check, some potion moves only become evasions because of the gate effect.
+  // Generate extra potion moves from the full non-evasion base list and filter by legality.
+  if constexpr (Type == EVASIONS)
+      if (pos.potions_enabled())
+      {
+          static thread_local ExtMove baseMoves[MAX_MOVES];
+          ExtMove* baseEnd = generate_base(NON_EVASIONS, pos, baseMoves);
+          ExtMove* potionEnd = generate_potions(NON_EVASIONS, pos, baseMoves, baseEnd);
+
+          for (ExtMove* it = baseEnd; it != potionEnd; ++it)
+          {
+              Move m = it->move;
+              if (type_of(m) == CASTLING)
+                  continue;
+              if (!pos.pseudo_legal(m))
+                  continue;
+              if (!pos.legal(m) || pos.virtual_drop(m))
+                  continue;
+
+              bool exists = false;
+              for (ExtMove* scan = moveList; scan != end; ++scan)
+                  if (scan->move == m)
+                  {
+                      exists = true;
+                      break;
+                  }
+              if (exists)
+                  continue;
+
+              *end++ = m;
+          }
+      }
+
+  return end;
+}
+
+ExtMove* generate_base(GenType Type, const Position& pos, ExtMove* moveList) {
+
+  assert(Type != LEGAL);
+  Color us = pos.side_to_move();
+
+  switch (Type)
+  {
+  case CAPTURES:
+      return us == WHITE ? generate_all_impl<WHITE, CAPTURES>(pos, moveList)
+                         : generate_all_impl<BLACK, CAPTURES>(pos, moveList);
+  case QUIETS:
+      return us == WHITE ? generate_all_impl<WHITE, QUIETS>(pos, moveList)
+                         : generate_all_impl<BLACK, QUIETS>(pos, moveList);
+  case QUIET_CHECKS:
+      return us == WHITE ? generate_all_impl<WHITE, QUIET_CHECKS>(pos, moveList)
+                         : generate_all_impl<BLACK, QUIET_CHECKS>(pos, moveList);
+  case EVASIONS:
+      return us == WHITE ? generate_all_impl<WHITE, EVASIONS>(pos, moveList)
+                         : generate_all_impl<BLACK, EVASIONS>(pos, moveList);
+  case NON_EVASIONS:
+      return us == WHITE ? generate_all_impl<WHITE, NON_EVASIONS>(pos, moveList)
+                         : generate_all_impl<BLACK, NON_EVASIONS>(pos, moveList);
+  default:
+      assert(false);
+      return moveList;
+  }
+}
+
+ExtMove* generate_potions(GenType Type, const Position& pos, ExtMove* baseStart, ExtMove* baseEnd) {
+
+  assert(Type != LEGAL);
+  Color us = pos.side_to_move();
+
+  switch (Type)
+  {
+  case CAPTURES:
+      return us == WHITE ? generate_potion_moves<WHITE, CAPTURES>(pos, baseStart, baseEnd)
+                         : generate_potion_moves<BLACK, CAPTURES>(pos, baseStart, baseEnd);
+  case QUIETS:
+      return us == WHITE ? generate_potion_moves<WHITE, QUIETS>(pos, baseStart, baseEnd)
+                         : generate_potion_moves<BLACK, QUIETS>(pos, baseStart, baseEnd);
+  case QUIET_CHECKS:
+      return us == WHITE ? generate_potion_moves<WHITE, QUIET_CHECKS>(pos, baseStart, baseEnd)
+                         : generate_potion_moves<BLACK, QUIET_CHECKS>(pos, baseStart, baseEnd);
+  case EVASIONS:
+      return us == WHITE ? generate_potion_moves<WHITE, EVASIONS>(pos, baseStart, baseEnd)
+                         : generate_potion_moves<BLACK, EVASIONS>(pos, baseStart, baseEnd);
+  case NON_EVASIONS:
+      return us == WHITE ? generate_potion_moves<WHITE, NON_EVASIONS>(pos, baseStart, baseEnd)
+                         : generate_potion_moves<BLACK, NON_EVASIONS>(pos, baseStart, baseEnd);
+  default:
+      assert(false);
+      return baseEnd;
+  }
 }
 
 ExtMove* generate_base(GenType Type, const Position& pos, ExtMove* moveList) {
@@ -956,8 +1062,9 @@ ExtMove* generate<LEGAL>(const Position& pos, ExtMove* moveList) {
 
   ExtMove* cur = moveList;
 
-  ExtMove* end = pos.checkers() ? generate<EVASIONS    >(pos, moveList)
-                                : generate<NON_EVASIONS>(pos, moveList);
+  bool needsEvasion = pos.checkers() && !pos.allow_self_check();
+  ExtMove* end = needsEvasion ? generate<EVASIONS    >(pos, moveList)
+                              : generate<NON_EVASIONS>(pos, moveList);
   while (cur != end)
       if (!pos.legal(*cur) || pos.virtual_drop(*cur))
           *cur = (--end)->move;
@@ -966,7 +1073,7 @@ ExtMove* generate<LEGAL>(const Position& pos, ExtMove* moveList) {
 
   // In check, some potion moves only become evasions because of the gate effect.
   // Generate extra potion moves from the full non-evasion base list and filter by legality.
-  if (pos.checkers() && pos.potions_enabled())
+  if (needsEvasion && pos.potions_enabled())
   {
       static thread_local ExtMove baseMoves[MAX_MOVES];
       ExtMove* baseEnd = generate_base(NON_EVASIONS, pos, baseMoves);
