@@ -48,7 +48,7 @@ else
 endif
 
 EM_COMMIT = $(shell git rev-parse --short HEAD)
-EM_UPSTREAM = $(shell git rev-parse --short $$(git merge-base HEAD upstream/master) 2>/dev/null)
+EM_UPSTREAM = $(shell git rev-parse --short $$(git merge-base HEAD upstream/master 2>/dev/null) 2>/dev/null)
 EM_EMSCRIPTEN = $(shell emsdk list | grep INSTALLED | head -n 1 | awk '{ print $$1 }')
 
 EXTRACXXFLAGS += \
