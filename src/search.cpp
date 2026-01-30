@@ -106,7 +106,7 @@ namespace {
     return potion_type_from_gating_piece(pos, gating_type(m)) != Variant::POTION_TYPE_NB;
   }
 
-  bool is_tactical_potion(const Position& pos, Move m, Bitboard ourRoyalAttackers, Square enemyRoyal) {
+  bool is_tactical_potion(const Position& pos, Move m, Bitboard ourRoyalAttackers, Square enemyRoyal, Square ourRoyal) {
 
     if (!pos.potions_enabled() || !is_gating(m))
         return false;
@@ -115,11 +115,40 @@ namespace {
     if (potion != Variant::POTION_FREEZE)
         return false;
 
+    Color us = pos.side_to_move();
+    Color them = ~us;
     Bitboard zone = pos.freeze_zone_from_square(gating_square(m));
     if (enemyRoyal != SQ_NONE && (zone & square_bb(enemyRoyal)))
         return true;
 
-    return ourRoyalAttackers && (zone & ourRoyalAttackers);
+    if (ourRoyalAttackers && (zone & ourRoyalAttackers))
+        return true;
+
+    Bitboard candidates = zone & pos.pieces(them);
+    if (!candidates)
+        return false;
+
+    const Value majorThreshold = PieceValue[MG][make_piece(WHITE, ROOK)];
+    Bitboard occ = pos.pieces();
+    while (candidates)
+    {
+        Square s = pop_lsb(candidates);
+        Piece pc = pos.piece_on(s);
+        PieceType pt = type_of(pc);
+        if (pt == NO_PIECE_TYPE)
+            continue;
+
+        // Freezing an attacked or major enemy piece is a tactical motif in spell-chess.
+        if (PieceValue[MG][pc] >= majorThreshold)
+            return true;
+        if (pos.attackers_to(s, us))
+            return true;
+
+        if (ourRoyal != SQ_NONE && (attacks_bb(them, pt, s, occ) & square_bb(ourRoyal)))
+            return true;
+    }
+
+    return false;
   }
 
   // Add a small random component to draw evaluations to avoid 3-fold blindness
@@ -731,7 +760,7 @@ namespace {
 
     // Step 1. Initialize node
     Thread* thisThread = pos.this_thread();
-    ss->inCheck        = pos.checkers();
+    ss->inCheck        = pos.checkers() && !pos.allow_self_check();
     priorCapture       = pos.captured_piece();
     Color us           = pos.side_to_move();
     moveCount          = captureCount = quietCount = ss->moveCount = 0;
@@ -739,11 +768,15 @@ namespace {
     maxValue           = VALUE_INFINITE;
     Bitboard ourRoyalAttackers = 0;
     Square enemyRoyal = SQ_NONE;
+    Square ourRoyal = SQ_NONE;
     if (pos.potions_enabled())
     {
         PieceType royal = pos.royal_piece_type();
         if (pos.count(us, royal))
-            ourRoyalAttackers = pos.attackers_to(pos.square(us, royal), ~us);
+        {
+            ourRoyal = pos.square(us, royal);
+            ourRoyalAttackers = pos.attackers_to(ourRoyal, ~us);
+        }
         if (pos.count(~us, royal))
             enemyRoyal = pos.square(~us, royal);
     }
@@ -1180,7 +1213,7 @@ moves_loop: // When in check, search starts from here
       captureOrPromotion = pos.capture_or_promotion(move);
       movedPiece = pos.moved_piece(move);
       givesCheck = pos.gives_check(move);
-      const bool tacticalPotion = is_tactical_potion(pos, move, ourRoyalAttackers, enemyRoyal);
+      const bool tacticalPotion = is_tactical_potion(pos, move, ourRoyalAttackers, enemyRoyal, ourRoyal);
 
       // Calculate new depth for this move
       newDepth = depth - 1;
@@ -1594,7 +1627,7 @@ moves_loop: // When in check, search starts from here
 
     Thread* thisThread = pos.this_thread();
     bestMove = MOVE_NONE;
-    ss->inCheck = pos.checkers();
+    ss->inCheck = pos.checkers() && !pos.allow_self_check();
     moveCount = 0;
 
     Value gameResult;
