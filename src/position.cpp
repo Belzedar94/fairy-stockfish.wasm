@@ -1548,9 +1548,6 @@ bool Position::legal(Move m) const {
           return false;
       if (frozen & to_sq(m))
           return false;
-      if (frozen & to_sq(m))
-          return false;
-          return false;
 
       // Only the castling king piece is subject to attack checks
       if (type_of(piece_on(from)) != castling_king_piece(us))
@@ -2591,6 +2588,16 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
           else
               st->potionZones[us][pt] = Bitboard(0);
       }
+
+      if (potion_piece(Variant::POTION_JUMP) != NO_PIECE_TYPE)
+      {
+          int zoneLifetime = std::max(var->potionCooldown[Variant::POTION_JUMP] - 1, 0);
+          Color opp = ~us;
+          if (st->potionZones[opp][Variant::POTION_JUMP]
+              && st->potionCooldown[opp][Variant::POTION_JUMP] == zoneLifetime)
+              st->potionZones[opp][Variant::POTION_JUMP] = Bitboard(0);
+      }
+
       togglePotionHashes(k);
   }
 
