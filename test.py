@@ -1037,6 +1037,16 @@ class TestPyffish(unittest.TestCase):
         moves = sf.legal_moves("spell-chess", fen, [])
         self.assertNotIn("f@b1,b2b3", moves)
 
+    def test_spell_chess_castling_illegal_while_in_check(self):
+        moves = [
+            "e2e4", "e7e5", "f1c4", "f8c5", "d1e2",
+            "g8f6", "c2c3", "d7d5", "f@d7,c4b5",
+            "f@a5,a7a6", "j@a2,a1a6"
+        ]
+        fen = sf.get_fen("spell-chess", "startpos", moves)
+        legal = sf.legal_moves("spell-chess", fen, [])
+        self.assertNotIn("e8g8", legal)
+
     def test_spell_chess_potion_consumes_hand(self):
         start = sf.start_fen("spell-chess")
         moves = sf.legal_moves("spell-chess", start, [])
@@ -1078,6 +1088,15 @@ class TestPyffish(unittest.TestCase):
                "R3K2R[JFFFjjfff] {F@-:1,J@d4:2,f@-:0,j@-:0} b KQk - 1 13")
         moves = sf.legal_moves("spell-chess", fen, ["g7g6"])
         self.assertIn("e3d4", moves)
+
+    def test_spell_chess_freeze_zone_expires_after_two_plies(self):
+        fen = ("rnbqk2r/1pp2ppp/R4n2/1Bbpp3/4P3/2P5/PP1PQPPP/"
+               "1NB1K1NR[JFFFFjjffff] {F@-:1,J@a2:2,f@a4:3,j@-:0} w Kkq - 0 6")
+        fen_after = sf.get_fen("spell-chess", fen, ["h2h3"])
+        state = fen_after[fen_after.index('{') + 1:fen_after.index('}')]
+        self.assertIn("f@-:2", state)
+        moves = sf.legal_moves("spell-chess", fen_after, [])
+        self.assertNotIn("e8g8", moves)
 
     def test_spell_chess_freeze_zone_history_allows_mate(self):
         fen = "rnbqkbnr/pp1p1Qpp/2p5/4p3/4P3/8/PPPP1PPP/RNB1KBNR[JJFFFFjjfffff] {F@f8:2,J@-:0,f@-:0,j@-:0} b KQkq - 0 3"
