@@ -1,11 +1,6 @@
 name: fairy
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
+  workflow_dispatch:
 jobs:
   fairy:
     name: ${{ matrix.config.name }}
